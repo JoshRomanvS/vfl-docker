@@ -6,20 +6,32 @@ from vertical_fl.task import process_dataset
 
 
 def server_fn(context: Context) -> ServerAppComponents:
-    """Construct components that set the ServerApp behaviour."""
+    """
+    Construct components that configure the Flower ServerApp behaviour.
 
-    # Get dataset
-    processed_df, _ = process_dataset()
+    Reads server configuration from context.run_config:
+    - "num-server-rounds": int, number of federated rounds to run (default: 1).
+    - "learning-rate": float, server-side learning rate for aggregation (default: 0.01).
 
-    # Define the strategy
-    strategy = Strategy(processed_df["Survived"].values)
+    Returns:
+        ServerAppComponents with custom strategy and server config.
+    """
+    # Load processed dataset and extract labels
+    df, _ = process_dataset()
+    labels = df["Survived"].values.tolist()
 
-    # Construct ServerConfig
-    num_rounds = context.run_config["num-server-rounds"]
+    # Fetch server run parameters, with sensible defaults
+    num_rounds = int(context.run_config.get("num-server-rounds", 1))
+    lr = float(context.run_config.get("learning-rate", 0.01))
+
+    # Initialize custom vertical-FL strategy
+    strategy = Strategy(labels=labels, lr=lr)
+
+    # Configure number of rounds for the server
     config = ServerConfig(num_rounds=num_rounds)
 
     return ServerAppComponents(strategy=strategy, config=config)
 
 
-# Start Flower server
+# Launch the Flower server
 app = ServerApp(server_fn=server_fn)
