@@ -1,0 +1,4 @@
+Now i'm trying to connect the VFL (SUT) to the Axini platform using an adapter.
+Plugin adapters connect to the AMP using websocket connection and communicate using our dedicated plugin adapter protocol.
+
+Hierin maakt de adapter een BrokerConnection
