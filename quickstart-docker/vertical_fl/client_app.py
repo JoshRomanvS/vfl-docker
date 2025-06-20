@@ -73,11 +73,11 @@ class FlowerClient(NumPyClient):
 
         Returns dummy loss (0.0) and number of examples.
         """
-        self.model.zero_grad()
-        embedding = self.model(self.data)
-        grad = torch.from_numpy(parameters[self.v_split_id])
-        embedding.backward(grad)
-        self.optimizer.step()
+        self.model.zero_grad()              # Clear old gradients
+        embedding = self.model(self.data)   # Forward pass: features → embeddings
+        grad = torch.from_numpy(parameters[self.v_split_id]) # Get gradients from server
+        embedding.backward(grad) # Backprop: apply server gradients
+        self.optimizer.step() # Update client model weights
         return 0.0, len(self.data), {}
 
 
@@ -90,8 +90,8 @@ def client_fn(context: Context) -> NumPyClient:
     # Load and preprocess data
     df_partition, v_split_id = load_data(partition_id, num_partitions)
     scaled = StandardScaler().fit_transform(df_partition)
-    data = torch.tensor(scaled).float()
-    lr = float(context.run_config.get("learning-rate", 0.01))
+    data = torch.tensor(scaled).float() # Normalize features
+    lr = float(context.run_config.get("learning-rate", 0.01)) # Convert to tensor
     return FlowerClient(v_split_id, data, lr).to_client()
 
 # Launch the Flower client

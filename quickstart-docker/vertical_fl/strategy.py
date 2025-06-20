@@ -56,11 +56,11 @@ class Strategy(fl.server.strategy.FedAvg):
         # Initialize base FedAvg with strict client requirements
         super().__init__(
             initial_parameters=initial_parameters,
-            fraction_fit=1.0,
+            fraction_fit=1.0,           # Require 100% of clients
             fraction_evaluate=1.0,
-            min_fit_clients=3,
-            min_available_clients=3,
-            min_evaluate_clients=3,
+            min_fit_clients=3,          # Must have exactly 3 clients
+            min_available_clients=3,    # Must have 3 available
+            min_evaluate_clients=3,     # Must have 3 for evaluation
             **kwargs,
         )
 
@@ -90,8 +90,8 @@ class Strategy(fl.server.strategy.FedAvg):
 
         # Forward + backward on server model
         outputs = self.model(embeddings)
-        loss = self.criterion(outputs, self.labels)
-        loss.backward()
+        loss = self.criterion(outputs, self.labels) # Binary cross-entropy
+        loss.backward() # Compute gradients
 
         # Server update
         self.optimizer.step()
