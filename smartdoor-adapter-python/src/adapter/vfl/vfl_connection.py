@@ -1,6 +1,6 @@
-import logging, threading, queue, time, flwr as fl
-from ../../../quickstart-docker.vertical_fl import server_app, client_app
-
+import logging, threading, queue, time
+import flwr as fl
+from vertical_fl import server_app, client_app
 
 class VflConnection:
     def __init__(self, handler):
@@ -15,10 +15,17 @@ class VflConnection:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
         logging.info("VFL driver thread started")
-        # Immediately acknowledge so AMP can send next stimulus
-        self.handler.send_message_to_amp("RESET_PERFORMED")
+        # # Immediately acknowledge so AMP can send next stimulus
+        self.send("RESET")
+        # self.handler.send_message_to_amp("RESET_PERFORMED")
 
     def send(self, cmd: str):
+        """
+        Send a message to the SUT.
+
+        Args:
+            message (str): Message to send
+        """
         logging.debug("Injecting cmd into VFL driver: %s", cmd)
         self.cmd_q.put(cmd)
 
@@ -38,6 +45,7 @@ class VflConnection:
                     rounds = int(cmd.split(":")[1])
                     self._train(rounds)
                 elif cmd == "RESET":
+                    logging.info("SUT state reset requested by AMP")
                     # Nothing to reset yet; future-proof
                     self.handler.send_message_to_amp("RESET_PERFORMED")
                 else:

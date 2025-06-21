@@ -8,13 +8,13 @@ from generic.api.configuration import ConfigurationItem, Configuration
 from generic.api.label import Label, Sort
 from generic.api.parameter import Type, Parameter
 from generic.handler import Handler as AbstractHandler
-from vfl.vfl_connection import SmartDoorConnection
+from vfl.vfl_connection import VflConnection
 
-def _response(name, channel='door', parameters=None):
+def _response(name, channel='vfl', parameters=None):
     """ Helper method to create a response Label. """
     return Label(Sort.RESPONSE, name, channel, parameters=parameters)
 
-def _stimulus(name, channel='door', parameters=None):
+def _stimulus(name, channel='vfl', parameters=None):
     """ Helper method to create a stimulus Label. """
     return Label(Sort.STIMULUS, name, channel, parameters=parameters)
 
@@ -47,9 +47,9 @@ class Handler(AbstractHandler):
         """
         Start a test.
         """
-        end_point = self.configuration.items[0].value
-        self.sut = SmartDoorConnection(self, end_point)
+        self.sut = VflConnection(self)
         self.sut.connect()
+
 
     def reset(self):
         """
@@ -96,20 +96,18 @@ class Handler(AbstractHandler):
              [Label]: List of all supported labels of this adapter
         """
         return [
-            _stimulus('open'),
-            _response('opened'),
-            _stimulus('close'),
-            _response('closed'),
-            _stimulus('lock', parameters=[Parameter('passcode', Type.INTEGER)]),
-            _response('locked'),
-            _stimulus('unlock', parameters=[Parameter('passcode', Type.INTEGER)]),
-            _response('unlocked'),
-            _stimulus('reset'),
-            _response('invalid_command'),
-            _response('invalid_passcode'),
-            _response('incorrect_passcode'),
-            _response('shut_off'),
+        _stimulus("start", parameters=[Parameter("rounds", Type.INTEGER)]),
+        _response("round_done", parameters=[
+            Parameter("round", Type.INTEGER),
+            Parameter("accuracy", Type.STRING),
+        ]),
+        _response("training_done", parameters=[Parameter("accuracy", Type.STRING)]),
+        _stimulus("reset"),
+        _response("reset_performed"),
+        _stimulus("stop"),
+        _response("error", parameters=[Parameter("reason", Type.STRING)]),
         ]
+
 
     def default_configuration(self) -> Configuration:
         """
@@ -125,41 +123,22 @@ class Handler(AbstractHandler):
             value='ws://localhost:3001'),
         ])
 
-    def _label2message(self, label: Label):
-        """
-        Converts a Protobuf label to a SUT message.
+    def _label2message(self, label: Label) -> str:
+        if label.name == "start":
+            return f"START:{label.parameters[0].value}"
+        return label.name.upper()
 
-        Args:
-            label (Label)
-        Returns:
-            str: The message to be sent to the SUT.
-        """
 
-        sut_msg = None
-        command_name = label.name.upper()
-        if label.name in ['lock', 'unlock']:
-            sut_msg = '{msg}:{passcode}'.format(msg=command_name, passcode=label.parameters[0].value)
-        else:
-            sut_msg = '{msg}'.format(msg=command_name)
+    def _message2label(self, msg: str) -> Label:
+        parts = msg.split(":")
+        name  = parts[0].lower()
+        params = []
+        if name in {"round_done"}:
+            params = [Parameter("round", Type.INTEGER, int(parts[1])),
+                    Parameter("accuracy", Type.STRING, float(parts[2]))]
+        elif name in {"training_done"}:
+            params = [Parameter("accuracy", Type.STRING, float(parts[1]))]
+        elif name in {"error"}:
+            params = [Parameter("reason", Type.STRING, ":".join(parts[1:]))]
+        return Label(Sort.RESPONSE, name, "vfl", parameters=params)
 
-        return sut_msg
-
-    def _message2label(self, message: str):
-        """
-        Converts a SUT message to a Protobuf Label.
-
-        Args:
-            message (str)
-        Returns:
-            Label: The converted message as a Label.
-        """
-
-        label_name = message.lower()
-        label = Label(
-            sort=Sort.RESPONSE,
-            name=label_name,
-            channel='door',
-            physical_label=bytes(message, 'UTF-8'),
-            timestamp=datetime.now())
-
-        return label
