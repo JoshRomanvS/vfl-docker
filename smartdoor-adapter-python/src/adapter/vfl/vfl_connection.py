@@ -1,93 +1,67 @@
-import logging
-import threading
-import websocket
+import logging, threading, queue, time, flwr as fl
+from ../../../quickstart-docker.vertical_fl import server_app, client_app
 
-class SmartDoorConnection:
-    """
-    This class handles the connection, sending and receiving of messages to the SmartDoor SUT
 
-    Attributes:
-        handler (adapter.smartdoor.Handler)
-        endpoint (str): URL of the SmartDoor SUT
-    """
-
-    def __init__(self, handler, endpoint):
+class VflConnection:
+    def __init__(self, handler):
         self.handler = handler
-        self.endpoint = endpoint
+        self.cmd_q   = queue.Queue()
+        self.thread  = None
+        self.alive   = threading.Event()
 
-        self.websocket = None
-        self.wst = None
-
+    # ───── External API used by Handler ──────────────────────────────────
     def connect(self):
-        """
-        Connect to the SmartDoor SUT. gg
-        """
-        logging.info('Connecting to SmartDoor')
+        self.alive.set()
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        logging.info("VFL driver thread started")
+        # Immediately acknowledge so AMP can send next stimulus
+        self.handler.send_message_to_amp("RESET_PERFORMED")
 
-        # Use lambda functions to correctly pass the self variable.
-        self.websocket = websocket.WebSocketApp(
-            self.endpoint,
-            on_open=lambda _: self.on_open(),
-            on_close=lambda _, close_status_code, close_msg: self.on_close(),
-            on_message=lambda _, msg: self.on_message(msg),
-            on_error=lambda _, msg: self.on_error(msg)
-        )
-
-        self.wst = threading.Thread(target=self.websocket.run_forever)
-        self.wst.daemon = True
-        self.wst.start()
-
-    def send(self, message):
-        """
-        Send a message to the SUT.
-
-        Args:
-            message (str): Message to send
-        """
-        logging.debug('Sending message to SUT: {msg}'.format(msg=message))
-
-        self.websocket.send(message)
-
-    def on_open(self):
-        """
-        Callback that is called when the socket to the SUT is opened.
-        """
-        logging.info('Connected to SUT')
-        self.send('RESET')
-
-    def on_close(self):
-        """
-        Callback that is called when the socket is closed.
-        """
-        logging.debug('Closed connection to SUT')
-
-    def on_message(self, msg):
-        """
-        Callback that is called when the SUT sends a message.
-
-        Args:
-            msg (str): Message of the SmartDoor SUT
-        """
-        logging.debug('Received message from SUT: {msg}'.format(msg=msg))
-        self.handler.send_message_to_amp(msg)
-
-    def on_error(self, msg):
-        """
-        Callback that is called when something is wrong with the websocket connection
-
-        Args:
-            msg (str): Error message
-        """
-        logging.error("Error with connection to SUT: {e}".format(e=msg))
+    def send(self, cmd: str):
+        logging.debug("Injecting cmd into VFL driver: %s", cmd)
+        self.cmd_q.put(cmd)
 
     def stop(self):
-        """
-        Perform any cleanup if the SUT is closed.
-        """
-        if self.websocket:
-            self.websocket.close()
-            logging.debug('Stopping thread which handles WebSocket connection with SUT')
-            self.websocket.keep_running = False
-            self.wst.join()
-            logging.debug('Thread stopped')
-            self.wst = None
+        self.cmd_q.put("STOP")
+        self.thread.join(timeout=5)
+
+    # ───── Internal worker loop ─────────────────────────────────────────
+    def _run(self):
+        try:
+            while self.alive.is_set():
+                cmd = self.cmd_q.get()
+                if cmd == "STOP":
+                    self.alive.clear()
+                    break
+                if cmd.startswith("START:"):
+                    rounds = int(cmd.split(":")[1])
+                    self._train(rounds)
+                elif cmd == "RESET":
+                    # Nothing to reset yet; future-proof
+                    self.handler.send_message_to_amp("RESET_PERFORMED")
+                else:
+                    self.handler.send_message_to_amp(f"ERROR:UnknownCmd:{cmd}")
+        except Exception as exc:
+            logging.exception("VFL driver crashed")
+            self.handler.send_message_to_amp(f"ERROR:{exc}")
+
+    # ───── One training run ─────────────────────────────────────────────
+    def _train(self, rounds: int):
+        from flwr.runner import run_simulation  # Local-mode helper
+        # Every round callback returns (round, metrics)
+        def _after_round(rnd, metrics):
+            acc = metrics.get("accuracy", -1)
+            self.handler.send_message_to_amp(f"ROUND_DONE:{rnd}:{acc:.4f}")
+
+        # Spin up the server + clients in-process (no network ports)
+        history = run_simulation(
+            client_fn=client_app.client_fn,
+            num_clients=3,
+            server_fn=server_app.server_fn,
+            config=fl.server.ServerConfig(num_rounds=rounds),
+            after_round=_after_round,
+        )
+
+        final_acc = history.metrics_distributed["accuracy"][-1][1]
+        self.handler.send_message_to_amp(f"TRAINING_DONE:{final_acc:.4f}")
