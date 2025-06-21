@@ -89,7 +89,7 @@ class Strategy(fl.server.strategy.FedAvg):
         embeddings = embeddings.detach().requires_grad_()
 
         # Forward + backward on server model
-        outputs = self.model(embeddings)
+        outputs = self.model(embeddings) # Raw prediction of survival probability
         loss = self.criterion(outputs, self.labels) # Binary cross-entropy
         loss.backward() # Compute gradients
 
