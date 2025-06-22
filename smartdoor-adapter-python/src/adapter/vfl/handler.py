@@ -97,6 +97,7 @@ class Handler(AbstractHandler):
         """
         return [
         _stimulus("start", parameters=[Parameter("rounds", Type.INTEGER)]),
+        _response("training_started"),
         _response("round_done", parameters=[
             Parameter("round", Type.INTEGER),
             Parameter("accuracy", Type.STRING),
@@ -135,9 +136,9 @@ class Handler(AbstractHandler):
         params = []
         if name in {"round_done"}:
             params = [Parameter("round", Type.INTEGER, int(parts[1])),
-                    Parameter("accuracy", Type.STRING, float(parts[2]))]
+                    Parameter("accuracy", Type.STRING, parts[2])]
         elif name in {"training_done"}:
-            params = [Parameter("accuracy", Type.STRING, float(parts[1]))]
+            params = [Parameter("accuracy", Type.STRING, parts[1])]
         elif name in {"error"}:
             params = [Parameter("reason", Type.STRING, ":".join(parts[1:]))]
         return Label(Sort.RESPONSE, name, "vfl", parameters=params)

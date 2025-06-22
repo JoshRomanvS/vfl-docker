@@ -1,75 +1,112 @@
-import logging, threading, queue, time
+# vfl_connection.py
+"""
+Bridges the MBT handler ⇆ your vertical-FL Flower simulation.
+"""
+
+from __future__ import annotations
+import threading, queue, logging
+from typing import Dict, List, Tuple
+from multiprocessing import Process
+
 import flwr as fl
-from vertical_fl import server_app, client_app
+from flwr.simulation import run_simulation
+from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from flwr.server.client_proxy import ClientProxy
+from flwr.common import FitRes, Parameters
+
+# ── your existing code ───────────────────────────────────────────────────
+from vertical_fl.strategy import Strategy                  # ← as-is
+from vertical_fl.client_app import app as client_app       # ← ClientApp instance
+from vertical_fl.task import process_dataset               # ← to get labels
+
+# ─────────────────────────────────────────────────────────────────────────
+class ReportingStrategy(Strategy):
+    """Wraps your Strategy so we can emit a callback after every round."""
+
+    def __init__(self, report_fn, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._report_fn = report_fn
+
+    def aggregate_fit(
+        self,
+        rnd: int,
+        results: List[Tuple[str | ClientProxy, FitRes]],
+        failures: List[BaseException],
+    ) -> Tuple[Parameters | None, Dict[str, float]]:
+        params, metrics = super().aggregate_fit(rnd, results, failures)
+        # Notify the handler
+        self._report_fn(rnd, metrics or {})
+        return params, metrics
+
 
 class VflConnection:
-    def __init__(self, handler):
-        self.handler = handler
-        self.cmd_q   = queue.Queue()
-        self.thread  = None
-        self.alive   = threading.Event()
+    """
+    Runs Flower in a background thread and translates simple text
+    commands to the simulation.
 
-    # ───── External API used by Handler ──────────────────────────────────
-    def connect(self):
-        self.alive.set()
-        self.thread = threading.Thread(target=self._run, daemon=True)
-        self.thread.start()
-        logging.info("VFL driver thread started")
-        # # Immediately acknowledge so AMP can send next stimulus
+    IN:   "START:<rounds>"  | "RESET" | "STOP"
+    OUT:  "RESET_PERFORMED" | "ROUND_DONE:<r>:<acc>" | "TRAINING_DONE:<acc>"
+    """
+
+    def __init__(self, handler) -> None:
+        self._handler = handler
+        self._cmd_q: queue.Queue[str] = queue.Queue()
+        self._alive = threading.Event()
+        self.prcess: Process
+
+    # ––––– public API (used by Handler) ––––––––––––––––––––––––––––––––
+    def connect(self) -> None:
+        self._alive.set()
+        threading.Thread(target=self._loop, daemon=True).start()
         self.send("RESET")
-        # self.handler.send_message_to_amp("RESET_PERFORMED")
+        logging.info("VFL connection established, waiting for commands...")
 
-    def send(self, cmd: str):
-        """
-        Send a message to the SUT.
+    def send(self, cmd: str) -> None:
+        self._cmd_q.put(cmd)
 
-        Args:
-            message (str): Message to send
-        """
-        logging.debug("Injecting cmd into VFL driver: %s", cmd)
-        self.cmd_q.put(cmd)
+    def stop(self) -> None:
+        self._cmd_q.put("STOP")
 
-    def stop(self):
-        self.cmd_q.put("STOP")
-        self.thread.join(timeout=5)
+    # ––––– internal worker loop ––––––––––––––––––––––––––––––––––––––––
+    def _loop(self) -> None:
+        while self._alive.is_set():
+            cmd = self._cmd_q.get()
+            if cmd == "STOP":
+                self._alive.clear()
+                break
+            if cmd == "RESET":
+                self._handler.send_message_to_amp("RESET_PERFORMED")
+            elif cmd.startswith("START:"):
+                rounds = int(cmd.split(":", 1)[1])
+                self._run_flower(rounds)
+            else:
+                self._handler.send_message_to_amp(f"ERROR:UnknownCmd:{cmd}")
 
-    # ───── Internal worker loop ─────────────────────────────────────────
-    def _run(self):
-        try:
-            while self.alive.is_set():
-                cmd = self.cmd_q.get()
-                if cmd == "STOP":
-                    self.alive.clear()
-                    break
-                if cmd.startswith("START:"):
-                    rounds = int(cmd.split(":")[1])
-                    self._train(rounds)
-                elif cmd == "RESET":
-                    logging.info("SUT state reset requested by AMP")
-                    # Nothing to reset yet; future-proof
-                    self.handler.send_message_to_amp("RESET_PERFORMED")
-                else:
-                    self.handler.send_message_to_amp(f"ERROR:UnknownCmd:{cmd}")
-        except Exception as exc:
-            logging.exception("VFL driver crashed")
-            self.handler.send_message_to_amp(f"ERROR:{exc}")
+    # ––––– one simulation run ––––––––––––––––––––––––––––––––––––––––––
+    def _run_flower(self, rounds: int) -> None:
+        latest_acc = float | None
+        # Build ReportingStrategy (wraps your Strategy)
+        labels, _ = process_dataset()
+        labels = labels["Survived"].tolist()
 
-    # ───── One training run ─────────────────────────────────────────────
-    def _train(self, rounds: int):
-        from flwr.runner import run_simulation  # Local-mode helper
-        # Every round callback returns (round, metrics)
-        def _after_round(rnd, metrics):
-            acc = metrics.get("accuracy", -1)
-            self.handler.send_message_to_amp(f"ROUND_DONE:{rnd}:{acc:.4f}")
+        def _on_round(rnd: int, metrics: Dict[str, float]) -> None:
+            nonlocal latest_acc
+            latest_acc = metrics.get("accuracy", -1.0)
+            self._handler.send_message_to_amp(f"ROUND_DONE:{rnd}:{latest_acc:.4f}")
 
-        # Spin up the server + clients in-process (no network ports)
-        history = run_simulation(
-            client_fn=client_app.client_fn,
-            num_clients=3,
-            server_fn=server_app.server_fn,
-            config=fl.server.ServerConfig(num_rounds=rounds),
-            after_round=_after_round,
+        strategy = ReportingStrategy(report_fn=_on_round, labels=labels)
+
+        server_components = ServerAppComponents(
+            strategy=strategy, config=ServerConfig(num_rounds=rounds)
+        )
+        server_app = ServerApp(server_fn=lambda _: server_components)
+
+        self._handler.send_message_to_amp("TRAINING_STARTED")
+        run_simulation(
+            server_app=server_app,
+            client_app=client_app,
+            num_supernodes=3,
+            # verbose_logging=True, # Uncomment for debug output
         )
 
-        final_acc = history.metrics_distributed["accuracy"][-1][1]
-        self.handler.send_message_to_amp(f"TRAINING_DONE:{final_acc:.4f}")
+        self._handler.send_message_to_amp(f"TRAINING_DONE:{latest_acc:.4f}")
