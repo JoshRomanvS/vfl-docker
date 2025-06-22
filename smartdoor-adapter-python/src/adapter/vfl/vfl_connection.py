@@ -3,27 +3,64 @@ Bridges the MBT handler ⇆ your vertical-FL Flower simulation.
 """
 
 from __future__ import annotations
-import threading, queue, logging
-from typing import Dict, List, Tuple
+import logging
+import queue
+import threading
+from enum import Enum
+from typing import Dict, List, Tuple, Optional, Callable
 
 import flwr as fl
-from flwr.simulation import run_simulation
+from flwr.common import FitRes, Parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from flwr.server.client_proxy import ClientProxy
-from flwr.common import FitRes, Parameters
+from flwr.simulation import run_simulation
 
-# ── your existing code ───────────────────────────────────────────────────
-from vertical_fl.strategy import Strategy                  # ← as-is
-from vertical_fl.client_app import app as client_app       # ← ClientApp instance
-from vertical_fl.task import process_dataset               # ← to get labels
+# ── your existing modules ───────────────────────────────────────────────
+from vertical_fl.client_app import app as client_app     # your ClientApp
+from vertical_fl.strategy import Strategy                # unchanged
+from vertical_fl.task import process_dataset             # to get labels
+# -----------------------------------------------------------------------
 
-# ─────────────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+
+class MessageType(Enum):
+    """Enumeration of message types for better type safety."""
+    TRAINING_STARTED = "TRAINING_STARTED"
+    ROUND_DONE = "ROUND_DONE"
+    TRAINING_DONE = "TRAINING_DONE"
+    RESET_PERFORMED = "RESET_PERFORMED"
+    ERROR = "ERROR"
+
+
+class Command(Enum):
+    """Enumeration of command types."""
+    START = "START"
+    RESET = "RESET"
+    STOP = "STOP"  # Stop running SUT (same as RESET)
+    SHUTDOWN = "SHUTDOWN"  # Shutdown the entire connection
+
+
+class StopSimulation(Exception):
+    """Raised inside the strategy to abort the run after the current round."""
+
+
 class ReportingStrategy(Strategy):
-    """Wraps your Strategy so we can emit a callback after every round."""
+    """Wraps your Strategy to:
+       1) emit metrics after every round and
+       2) honour a stop event set by the adapter.
+    """
 
-    def __init__(self, report_fn, *args, **kwargs):
+    def __init__(
+        self, 
+        report_fn: Callable[[int, Dict[str, float]], None], 
+        stop_evt: threading.Event, 
+        *args, 
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self._report_fn = report_fn
+        self._stop_evt = stop_evt
 
     def aggregate_fit(
         self,
@@ -31,79 +68,237 @@ class ReportingStrategy(Strategy):
         results: List[Tuple[str | ClientProxy, FitRes]],
         failures: List[BaseException],
     ) -> Tuple[Parameters | None, Dict[str, float]]:
+        """Aggregate fit results and report metrics."""
         params, metrics = super().aggregate_fit(rnd, results, failures)
-        # Notify the handler
+        
+        # Report metrics after aggregation
         self._report_fn(rnd, metrics or {})
+        
+        # Check if stop was requested
+        if self._stop_evt.is_set():
+            logger.info(f"Stop requested after round {rnd}")
+            raise StopSimulation
+            
         return params, metrics
 
 
 class VflConnection:
-    """
-    Runs Flower in a background thread and translates simple text
-    commands to the simulation.
+    """Adapter-side controller for MBT ⇆ Flower VFL simulation.
 
-    IN:   "START:<rounds>"  | "RESET" | "STOP"
-    OUT:  "RESET_PERFORMED" | "ROUND_DONE:<r>:<acc>" | "TRAINING_DONE:<acc>"
+    Commands IN:
+        START:<n>  - Start training with n rounds
+        RESET      - Reset/stop current training
+        STOP       - Stop current training (same as RESET)
+        SHUTDOWN   - Shutdown adapter completely
+
+    Messages OUT:
+        TRAINING_STARTED
+        ROUND_DONE:<round>:<accuracy|na>
+        TRAINING_DONE[:<accuracy>]
+        RESET_PERFORMED
+        ERROR:<reason>
     """
 
-    def __init__(self, handler) -> None:
+    def __init__(self, handler):
         self._handler = handler
         self._cmd_q: queue.Queue[str] = queue.Queue()
-        self._alive = threading.Event()
+        self._main_thread: Optional[threading.Thread] = None
+        self._sim_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._is_running = False
+        self._lock = threading.Lock()
 
-    # ––––– public API (used by Handler) ––––––––––––––––––––––––––––––––
     def connect(self) -> None:
-        self._alive.set()
-        threading.Thread(target=self._loop, daemon=True).start()
-        self.send("RESET")
-        logging.info("VFL connection established, waiting for commands...")
+        """Start the connection and begin listening for commands."""
+        with self._lock:
+            if self._is_running:
+                logger.warning("VFL connection already running")
+                return
+                
+            self._is_running = True
+            self._main_thread = threading.Thread(
+                target=self._main_loop, 
+                daemon=True,
+                name="VFL-MainLoop"
+            )
+            self._main_thread.start()
+            
+        logger.info("VFL connection ready; waiting for commands")
+        self.send_command(Command.RESET.value)
 
-    def send(self, cmd: str) -> None:
+    def send_command(self, cmd: str) -> None:
+        """Send a command to the connection."""
+        if not self._is_running:
+            logger.warning(f"Cannot send command {cmd}: connection not running")
+            return
         self._cmd_q.put(cmd)
 
     def stop(self) -> None:
-        self._cmd_q.put("STOP")
+        """Stop the connection gracefully."""
+        with self._lock:
+            if not self._is_running:
+                return
+                
+            self._is_running = False
+            
+        self.send_command(Command.SHUTDOWN.value)
+        
+        if self._main_thread:
+            self._main_thread.join(timeout=5.0)
+            if self._main_thread.is_alive():
+                logger.warning("Main thread did not terminate within timeout")
 
-    # ––––– internal worker loop ––––––––––––––––––––––––––––––––––––––––
-    def _loop(self) -> None:
-        while self._alive.is_set():
-            cmd = self._cmd_q.get()
-            if cmd == "STOP":
-                self._alive.clear()
-                break
-            if cmd == "RESET":
-                self._handler.send_message_to_amp("RESET_PERFORMED")
-            elif cmd.startswith("START:"):
-                rounds = int(cmd.split(":", 1)[1])
-                self._run_flower(rounds)
+    def _send_message(self, msg_type: MessageType, *args) -> None:
+        """Send a message to the MBT handler."""
+        if args:
+            message = f"{msg_type.value}:{':'.join(map(str, args))}"
+        else:
+            message = msg_type.value
+        self._handler.send_message_to_amp(message)
+
+    def _send_error(self, reason: str) -> None:
+        """Send an error message."""
+        self._send_message(MessageType.ERROR, reason)
+
+    def _main_loop(self) -> None:
+        """Main command processing loop."""
+        logger.info("Starting VFL main loop")
+        
+        try:
+            while self._is_running:
+                try:
+                    # Use timeout to allow periodic checks of _is_running
+                    cmd = self._cmd_q.get(timeout=1.0)
+                except queue.Empty:
+                    continue
+                    
+                if not self._is_running:
+                    break
+                    
+                self._process_command(cmd)
+                
+        except Exception as e:
+            logger.exception("Unexpected error in main loop")
+            self._send_error(f"MainLoopError:{str(e)}")
+        finally:
+            self._graceful_stop_simulation()
+            logger.info("VFL main loop terminated")
+
+    def _process_command(self, cmd: str) -> None:
+        """Process a single command."""
+        try:
+            if cmd == Command.SHUTDOWN.value:
+                self._is_running = False
+                return
+
+            if cmd in (Command.RESET.value, Command.STOP.value):
+                self._graceful_stop_simulation()
+                self._send_message(MessageType.RESET_PERFORMED)
+                return
+
+            if cmd.startswith(f"{Command.START.value}:"):
+                self._handle_start_command(cmd)
+                return
+
+            self._send_error(f"UnknownCmd:{cmd}")
+            
+        except Exception as e:
+            logger.exception(f"Error processing command {cmd}")
+            self._send_error(f"CommandError:{str(e)}")
+
+    def _handle_start_command(self, cmd: str) -> None:
+        """Handle START command."""
+        try:
+            parts = cmd.split(":", 1)
+            if len(parts) != 2:
+                raise ValueError("Invalid START command format")
+                
+            rounds = int(parts[1])
+            if rounds <= 0:
+                raise ValueError("Number of rounds must be positive")
+                
+        except (ValueError, IndexError) as e:
+            self._send_error(f"InvalidStartCmd:{str(e)}")
+            return
+
+        # Stop any existing simulation
+        self._graceful_stop_simulation()
+        
+        # Start new simulation
+        self._stop_event.clear()
+        self._sim_thread = threading.Thread(
+            target=self._run_flower_simulation,
+            args=(rounds,),
+            daemon=True,
+            name="VFL-Simulation"
+        )
+        self._sim_thread.start()
+
+    def _graceful_stop_simulation(self) -> None:
+        """Stop the current simulation gracefully."""
+        if self._sim_thread and self._sim_thread.is_alive():
+            logger.info("Stopping current simulation")
+            self._stop_event.set()
+            self._sim_thread.join(timeout=10.0)
+            
+            if self._sim_thread.is_alive():
+                logger.warning("Simulation thread did not terminate within timeout")
             else:
-                self._handler.send_message_to_amp(f"ERROR:UnknownCmd:{cmd}")
+                logger.info("Simulation stopped successfully")
+                
+            self._sim_thread = None
 
-    # ––––– one simulation run ––––––––––––––––––––––––––––––––––––––––––
-    def _run_flower(self, rounds: int) -> None:
-        latest_acc = float | None
-        # Build ReportingStrategy (wraps your Strategy)
-        labels, _ = process_dataset()
-        labels = labels["Survived"].tolist()
+    def _run_flower_simulation(self, rounds: int) -> None:
+        """Run a single Flower simulation in its own thread."""
+        latest_accuracy: Optional[float] = None
+        
+        def on_round_complete(rnd: int, metrics: Dict[str, float]) -> None:
+            nonlocal latest_accuracy
+            latest_accuracy = metrics.get("accuracy")
+            acc_str = f"{latest_accuracy:.4f}" if latest_accuracy is not None else "na"
+            self._send_message(MessageType.ROUND_DONE, rnd, acc_str)
 
-        def _on_round(rnd: int, metrics: Dict[str, float]) -> None:
-            nonlocal latest_acc
-            latest_acc = metrics.get("accuracy", -1.0)
-            self._handler.send_message_to_amp(f"ROUND_DONE:{rnd}:{latest_acc:.4f}")
+        try:
+            # Prepare data
+            labels, _ = process_dataset()
+            labels = labels["Survived"].tolist()
+            
+            # Create strategy with reporting
+            strategy = ReportingStrategy(
+                report_fn=on_round_complete,
+                stop_evt=self._stop_event,
+                labels=labels,
+            )
+            
+            # Create server app
+            server_app = ServerApp(
+                server_fn=lambda _: ServerAppComponents(
+                    strategy=strategy,
+                    config=ServerConfig(num_rounds=rounds),
+                )
+            )
 
-        strategy = ReportingStrategy(report_fn=_on_round, labels=labels)
+            # Notify start
+            self._send_message(MessageType.TRAINING_STARTED)
+            logger.info(f"Starting FL simulation with {rounds} rounds")
 
-        server_components = ServerAppComponents(
-            strategy=strategy, config=ServerConfig(num_rounds=rounds)
-        )
-        server_app = ServerApp(server_fn=lambda _: server_components)
-
-        self._handler.send_message_to_amp("TRAINING_STARTED")
-        run_simulation(
-            server_app=server_app,
-            client_app=client_app,
-            num_supernodes=3,
-            # verbose_logging=True, # Uncomment for debug output
-        )
-
-        self._handler.send_message_to_amp(f"TRAINING_DONE:{latest_acc:.4f}")
+            # Run simulation
+            run_simulation(
+                server_app=server_app,
+                client_app=client_app,
+                num_supernodes=3,
+            )
+            
+            logger.info("Simulation completed successfully")
+            
+        except StopSimulation:
+            logger.info("Simulation stopped by request")
+        except Exception as e:
+            logger.exception("Error during simulation")
+            self._send_error(f"SimulationError:{str(e)}")
+        finally:
+            # Send completion message
+            if latest_accuracy is not None:
+                self._send_message(MessageType.TRAINING_DONE, f"{latest_accuracy:.4f}")
+            else:
+                self._send_message(MessageType.TRAINING_DONE)
