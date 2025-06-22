@@ -106,6 +106,7 @@ class Handler(AbstractHandler):
         _stimulus("reset"),
         _response("reset_performed"),
         _stimulus("stop"),
+        _response("stopped"),
         _response("error", parameters=[Parameter("reason", Type.STRING)]),
         ]
 
