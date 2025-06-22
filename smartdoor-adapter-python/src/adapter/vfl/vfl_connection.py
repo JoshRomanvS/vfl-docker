@@ -5,7 +5,6 @@ Bridges the MBT handler ⇆ your vertical-FL Flower simulation.
 from __future__ import annotations
 import threading, queue, logging
 from typing import Dict, List, Tuple
-from multiprocessing import Process
 
 import flwr as fl
 from flwr.simulation import run_simulation
@@ -51,7 +50,6 @@ class VflConnection:
         self._handler = handler
         self._cmd_q: queue.Queue[str] = queue.Queue()
         self._alive = threading.Event()
-        self.prcess: Process
 
     # ––––– public API (used by Handler) ––––––––––––––––––––––––––––––––
     def connect(self) -> None:
