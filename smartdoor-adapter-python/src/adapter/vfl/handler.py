@@ -56,7 +56,7 @@ class Handler(AbstractHandler):
         Prepare the SUT for the next test case.
         """
         logging.info('Resetting the SUT for a new test case')
-        self.sut.send('RESET')
+        self.sut.send_command('RESET')
 
     def stop(self):
         """
@@ -86,7 +86,7 @@ class Handler(AbstractHandler):
 
         # leading spaces are needed to justify the stimuli and responses
         logging.info('      Injecting stimulus @SUT: ?{name}'.format(name=label.name))
-        self.sut.send(sut_msg)
+        self.sut.send_command(sut_msg)
 
     def supported_labels(self):
         """

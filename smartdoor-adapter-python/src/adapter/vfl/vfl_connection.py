@@ -30,6 +30,7 @@ class MessageType(Enum):
     ROUND_DONE = "ROUND_DONE"
     TRAINING_DONE = "TRAINING_DONE"
     RESET_PERFORMED = "RESET_PERFORMED"
+    STOPPED = "STOPPED"
     ERROR = "ERROR"
 
 
@@ -52,10 +53,10 @@ class ReportingStrategy(Strategy):
     """
 
     def __init__(
-        self, 
-        report_fn: Callable[[int, Dict[str, float]], None], 
-        stop_evt: threading.Event, 
-        *args, 
+        self,
+        report_fn: Callable[[int, Dict[str, float]], None],
+        stop_evt: threading.Event,
+        *args,
         **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -70,15 +71,15 @@ class ReportingStrategy(Strategy):
     ) -> Tuple[Parameters | None, Dict[str, float]]:
         """Aggregate fit results and report metrics."""
         params, metrics = super().aggregate_fit(rnd, results, failures)
-        
+
         # Report metrics after aggregation
         self._report_fn(rnd, metrics or {})
-        
+
         # Check if stop was requested
         if self._stop_evt.is_set():
             logger.info(f"Stop requested after round {rnd}")
             raise StopSimulation
-            
+
         return params, metrics
 
 
@@ -114,15 +115,15 @@ class VflConnection:
             if self._is_running:
                 logger.warning("VFL connection already running")
                 return
-                
+
             self._is_running = True
             self._main_thread = threading.Thread(
-                target=self._main_loop, 
+                target=self._main_loop,
                 daemon=True,
                 name="VFL-MainLoop"
             )
             self._main_thread.start()
-            
+
         logger.info("VFL connection ready; waiting for commands")
         self.send_command(Command.RESET.value)
 
@@ -138,11 +139,9 @@ class VflConnection:
         with self._lock:
             if not self._is_running:
                 return
-                
-            self._is_running = False
-            
+
         self.send_command(Command.SHUTDOWN.value)
-        
+
         if self._main_thread:
             self._main_thread.join(timeout=5.0)
             if self._main_thread.is_alive():
@@ -163,7 +162,7 @@ class VflConnection:
     def _main_loop(self) -> None:
         """Main command processing loop."""
         logger.info("Starting VFL main loop")
-        
+
         try:
             while self._is_running:
                 try:
@@ -171,12 +170,12 @@ class VflConnection:
                     cmd = self._cmd_q.get(timeout=1.0)
                 except queue.Empty:
                     continue
-                    
+
                 if not self._is_running:
                     break
-                    
+
                 self._process_command(cmd)
-                
+
         except Exception as e:
             logger.exception("Unexpected error in main loop")
             self._send_error(f"MainLoopError:{str(e)}")
@@ -191,7 +190,12 @@ class VflConnection:
                 self._is_running = False
                 return
 
-            if cmd in (Command.RESET.value, Command.STOP.value):
+            if cmd in (Command.STOP.value):
+                self._graceful_stop_simulation()
+                self._send_message(MessageType.STOPPED)
+                return
+            
+            if cmd in (Command.RESET.value):
                 self._graceful_stop_simulation()
                 self._send_message(MessageType.RESET_PERFORMED)
                 return
@@ -201,7 +205,7 @@ class VflConnection:
                 return
 
             self._send_error(f"UnknownCmd:{cmd}")
-            
+
         except Exception as e:
             logger.exception(f"Error processing command {cmd}")
             self._send_error(f"CommandError:{str(e)}")
@@ -212,18 +216,18 @@ class VflConnection:
             parts = cmd.split(":", 1)
             if len(parts) != 2:
                 raise ValueError("Invalid START command format")
-                
+
             rounds = int(parts[1])
             if rounds <= 0:
                 raise ValueError("Number of rounds must be positive")
-                
+
         except (ValueError, IndexError) as e:
             self._send_error(f"InvalidStartCmd:{str(e)}")
             return
 
         # Stop any existing simulation
         self._graceful_stop_simulation()
-        
+
         # Start new simulation
         self._stop_event.clear()
         self._sim_thread = threading.Thread(
@@ -240,18 +244,18 @@ class VflConnection:
             logger.info("Stopping current simulation")
             self._stop_event.set()
             self._sim_thread.join(timeout=10.0)
-            
+
             if self._sim_thread.is_alive():
                 logger.warning("Simulation thread did not terminate within timeout")
             else:
                 logger.info("Simulation stopped successfully")
-                
+
             self._sim_thread = None
 
     def _run_flower_simulation(self, rounds: int) -> None:
         """Run a single Flower simulation in its own thread."""
         latest_accuracy: Optional[float] = None
-        
+
         def on_round_complete(rnd: int, metrics: Dict[str, float]) -> None:
             nonlocal latest_accuracy
             latest_accuracy = metrics.get("accuracy")
@@ -262,14 +266,14 @@ class VflConnection:
             # Prepare data
             labels, _ = process_dataset()
             labels = labels["Survived"].tolist()
-            
+
             # Create strategy with reporting
             strategy = ReportingStrategy(
                 report_fn=on_round_complete,
                 stop_evt=self._stop_event,
                 labels=labels,
             )
-            
+
             # Create server app
             server_app = ServerApp(
                 server_fn=lambda _: ServerAppComponents(
@@ -288,9 +292,9 @@ class VflConnection:
                 client_app=client_app,
                 num_supernodes=3,
             )
-            
+
             logger.info("Simulation completed successfully")
-            
+
         except StopSimulation:
             logger.info("Simulation stopped by request")
         except Exception as e:
