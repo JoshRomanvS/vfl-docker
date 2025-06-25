@@ -80,10 +80,15 @@ class Strategy(fl.server.strategy.FedAvg):
         if not self.accept_failures and failures:
             return None, {}
 
+        client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results]
+        embedding_shapes = [emb.shape for emb in client_embeddings]
+        embedding_sums = [emb.sum(axis=0) for emb in client_embeddings]
+
+        print(f"Aggregating {len(client_embeddings)} client embeddings with shapes: {embedding_shapes} and sum: {embedding_sums}")
+
         # Collect and concatenate client embeddings
         embedding_list = [
-            torch.from_numpy(parameters_to_ndarrays(res.parameters)[0])
-            for _, res in results
+            torch.from_numpy(emb) for emb in client_embeddings
         ]
         embeddings = torch.cat(embedding_list, dim=1)
         embeddings = embeddings.detach().requires_grad_()
@@ -102,6 +107,9 @@ class Strategy(fl.server.strategy.FedAvg):
         np_grads = [g.numpy() for g in grads]
         aggregated_parameters = ndarrays_to_parameters(np_grads)
 
+        gradient_shapes = [g.shape for g in np_grads]
+        gradient_sums = [g.sum(axis=0) for g in np_grads]
+
         # Compute accuracy metric
         with torch.no_grad():
             preds = (self.model(embeddings) > 0.5).float()
@@ -111,7 +119,7 @@ class Strategy(fl.server.strategy.FedAvg):
         # Save new checkpoint
         self._save_checkpoint()
 
-        return aggregated_parameters, {"accuracy": accuracy}
+        return aggregated_parameters, {"accuracy": accuracy, "embedding_shapes": embedding_shapes, "embedding_sums": embedding_sums, "gradient_shapes": gradient_shapes, "gradient_sums": gradient_sums}
 
     def aggregate_evaluate(
         self,

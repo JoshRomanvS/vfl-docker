@@ -9,6 +9,7 @@ from generic.api.label import Label, Sort
 from generic.api.parameter import Type, Parameter
 from generic.handler import Handler as AbstractHandler
 from vfl.vfl_connection import VflConnection
+import re
 
 def _response(name, channel='vfl', parameters=None):
     """ Helper method to create a response Label. """
@@ -36,7 +37,7 @@ class Handler(AbstractHandler):
         """
         logging.debug('response received: {label}'.format(label=raw_message))
 
-        if raw_message == 'RESET_PERFORMED':
+        if raw_message == 'HARD_RESET_PERFORMED':
             # After 'RESET_PERFORMED', the SUT is ready for a new test case.
             self.adapter_core.send_ready()
         else:
@@ -100,10 +101,11 @@ class Handler(AbstractHandler):
         _response("training_started"),
         _response("round_done", parameters=[
             Parameter("round", Type.INTEGER),
-            Parameter("accuracy", Type.STRING),
+            Parameter("accuracy", Type.DECIMAL),
         ]),
-        _response("training_done", parameters=[Parameter("accuracy", Type.STRING)]),
+        _response("training_done", parameters=[Parameter("accuracy", Type.DECIMAL)]),
         _stimulus("reset"),
+        _stimulus("reset_vfl"),
         _response("reset_performed"),
         _stimulus("stop"),
         _response("stopped"),
@@ -132,14 +134,18 @@ class Handler(AbstractHandler):
 
 
     def _message2label(self, msg: str) -> Label:
+        print(F"\n\nParsing message: {msg}\n\n")
         parts = msg.split(":")
         name  = parts[0].lower()
         params = []
         if name in {"round_done"}:
             params = [Parameter("round", Type.INTEGER, int(parts[1])),
-                    Parameter("accuracy", Type.STRING, parts[2])]
+                      Parameter("accuracy", Type.DECIMAL, float(parts[2])),
+                      Parameter("embedding_shapes", Type.ARRAY, parts[3].split(",")),
+                      Parameter("gradient_shapes", Type.ARRAY, parts[4].split(","))
+                      ]
         elif name in {"training_done"}:
-            params = [Parameter("accuracy", Type.STRING, parts[1])]
+            params = [Parameter("accuracy", Type.DECIMAL, float(parts[1]))]
         elif name in {"error"}:
             params = [Parameter("reason", Type.STRING, ":".join(parts[1:]))]
         return Label(Sort.RESPONSE, name, "vfl", parameters=params)

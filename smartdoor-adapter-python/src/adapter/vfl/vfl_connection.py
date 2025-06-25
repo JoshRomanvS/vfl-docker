@@ -9,6 +9,7 @@ import threading
 from enum import Enum
 from typing import Dict, List, Tuple, Optional, Callable
 
+
 import flwr as fl
 from flwr.common import FitRes, Parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
@@ -16,8 +17,8 @@ from flwr.server.client_proxy import ClientProxy
 from flwr.simulation import run_simulation
 
 # ── your existing modules ───────────────────────────────────────────────
-from vertical_fl.client_app import app as client_app     # your ClientApp
-from vertical_fl.strategy import Strategy                # unchanged
+from vertical_fl.client_app import app as client_app, CHECKPOINT_DIR as CLIENT_CKPT_DIR
+from vertical_fl.strategy import Strategy, CHECKPOINT_DIR as SERVER_CKPT_DIR
 from vertical_fl.task import process_dataset             # to get labels
 # -----------------------------------------------------------------------
 
@@ -30,6 +31,7 @@ class MessageType(Enum):
     ROUND_DONE = "ROUND_DONE"
     TRAINING_DONE = "TRAINING_DONE"
     RESET_PERFORMED = "RESET_PERFORMED"
+    HARD_RESET_PERFORMED = "HARD_RESET_PERFORMED"
     STOPPED = "STOPPED"
     ERROR = "ERROR"
 
@@ -38,6 +40,7 @@ class Command(Enum):
     """Enumeration of command types."""
     START = "START"
     RESET = "RESET"
+    RESET_VFL = "RESET_VFL"  # Reset current VFL run (same as RESET)
     STOP = "STOP"  # Stop running SUT (same as RESET)
     SHUTDOWN = "SHUTDOWN"  # Shutdown the entire connection
 
@@ -147,6 +150,16 @@ class VflConnection:
             if self._main_thread.is_alive():
                 logger.warning("Main thread did not terminate within timeout")
 
+    def clear_all_checkpoints(self) -> None:
+        """Delete every *.pth file produced by the current VFL run."""
+        for dir_path in (SERVER_CKPT_DIR, CLIENT_CKPT_DIR):
+            for checkpoint in dir_path.glob("*.pth"):
+                try:
+                    checkpoint.unlink()
+                except OSError as err:
+                    logger.warning(f"Could not delete {checkpoint}: {err}")
+        logger.info("Cleared all checkpoints")
+
     def _send_message(self, msg_type: MessageType, *args) -> None:
         """Send a message to the MBT handler."""
         if args:
@@ -194,10 +207,15 @@ class VflConnection:
                 self._graceful_stop_simulation()
                 self._send_message(MessageType.STOPPED)
                 return
-            
-            if cmd in (Command.RESET.value):
+
+            if cmd in (Command.RESET.value, Command.RESET_VFL.value):
+                print(F"command received: {cmd}")
                 self._graceful_stop_simulation()
-                self._send_message(MessageType.RESET_PERFORMED)
+                self.clear_all_checkpoints()
+                if cmd in Command.RESET.value:
+                    self._send_message(MessageType.HARD_RESET_PERFORMED)
+                else:
+                    self._send_message(MessageType.RESET_PERFORMED)
                 return
 
             if cmd.startswith(f"{Command.START.value}:"):
@@ -259,8 +277,18 @@ class VflConnection:
         def on_round_complete(rnd: int, metrics: Dict[str, float]) -> None:
             nonlocal latest_accuracy
             latest_accuracy = metrics.get("accuracy")
+            embedding_shapes = metrics.get("embedding_shapes", [])
+            embedding_sums = metrics.get("embedding_sums", [])
+            gradient_shapes = metrics.get("gradient_shapes", [])
+            gradient_sums = metrics.get("gradient_sums", [])
+
+            emb_shape_str = ",".join(f"{N}x{D}" for N, D in embedding_shapes)
+            grad_shape_str = ",".join(f"{N}x{D}" for N, D in gradient_shapes) # => "128x4,128x4,128x4"
+
+            print(F"\n\n\nIn round complete === embedding shapes: {emb_shape_str}, gradient shapes: {grad_shape_str}")
+            print(F"In round complete ===embedding sums: {embedding_sums}, gradient sums: {gradient_sums}\n\n\n")
             acc_str = f"{latest_accuracy:.4f}" if latest_accuracy is not None else "na"
-            self._send_message(MessageType.ROUND_DONE, rnd, acc_str)
+            self._send_message(MessageType.ROUND_DONE, rnd, acc_str, emb_shape_str, grad_shape_str)
 
         try:
             # Prepare data
