@@ -9,9 +9,10 @@ import torch.nn as nn
 import torch.optim as optim
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 
+from vertical_fl.utils import set_seed, GLOBAL_SEED
+
 # Directory for saving/loading server checkpoints
 CHECKPOINT_DIR = Path(__file__).parent.parent / "model" / "central"
-
 class ServerModel(nn.Module):
     """
     A simple server-side model that aggregates client embeddings.
@@ -40,6 +41,9 @@ class Strategy(fl.server.strategy.FedAvg):
         # Ensure checkpoint directory exists
         CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
 
+        # Set global seed for reproducibility
+        set_seed(GLOBAL_SEED)
+
         # Initialize server model
         self.model = ServerModel(12)
         # Attempt to load latest checkpoint
@@ -61,6 +65,8 @@ class Strategy(fl.server.strategy.FedAvg):
             min_fit_clients=3,
             min_available_clients=3,
             min_evaluate_clients=3,
+            on_fit_config_fn=lambda rnd: {"round": rnd},
+            on_evaluate_config_fn=lambda rnd: {"round": rnd},
             **kwargs,
         )
 
@@ -80,11 +86,15 @@ class Strategy(fl.server.strategy.FedAvg):
         if not self.accept_failures and failures:
             return None, {}
 
+        # Ensure reproducability
+        set_seed(GLOBAL_SEED + rnd)
+        print(f"\n\n!!!!!   In aggregate_fit: Round {rnd}, used seed: {GLOBAL_SEED + rnd}  !!!!!\n\n")
+
         client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results]
         embedding_shapes = [emb.shape for emb in client_embeddings]
         embedding_sums = [emb.sum(axis=0) for emb in client_embeddings]
 
-        print(f"Aggregating {len(client_embeddings)} client embeddings with shapes: {embedding_shapes} and sum: {embedding_sums}")
+        # print(f"Aggregating {len(client_embeddings)} client embeddings with shapes: {embedding_shapes} and sum: {embedding_sums}")
 
         # Collect and concatenate client embeddings
         embedding_list = [

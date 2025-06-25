@@ -285,8 +285,8 @@ class VflConnection:
             emb_shape_str = ",".join(f"{N}x{D}" for N, D in embedding_shapes)
             grad_shape_str = ",".join(f"{N}x{D}" for N, D in gradient_shapes) # => "128x4,128x4,128x4"
 
-            print(F"\n\n\nIn round complete === embedding shapes: {emb_shape_str}, gradient shapes: {grad_shape_str}")
-            print(F"In round complete ===embedding sums: {embedding_sums}, gradient sums: {gradient_sums}\n\n\n")
+            # print(F"\n\n\nIn round complete === embedding shapes: {emb_shape_str}, gradient shapes: {grad_shape_str}")
+            # print(F"In round complete ===embedding sums: {embedding_sums}, gradient sums: {gradient_sums}\n\n\n")
             acc_str = f"{latest_accuracy:.4f}" if latest_accuracy is not None else "na"
             self._send_message(MessageType.ROUND_DONE, rnd, acc_str, emb_shape_str, grad_shape_str)
 
