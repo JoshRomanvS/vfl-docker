@@ -1,21 +1,27 @@
-import os
-from pathlib import Path
-from typing import Any, Dict, List, Tuple
-
 import torch
+
+torch.set_num_threads(1)
+try: torch.set_num_interop_threads(1)
+except RuntimeError: pass
+
 from torch import Tensor
 from torch.optim import SGD
 from sklearn.preprocessing import StandardScaler
+
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
 
 from flwr.client import NumPyClient, ClientApp
 from flwr.common import Context
 
 from vertical_fl.task import ClientModel, load_data
 
+from vertical_fl.utils import set_seed, GLOBAL_SEED
+
 # Directory for saving/loading client checkpoints
 CHECKPOINT_DIR = Path(__file__).parent.parent / "model" / "clients"
 CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 class FlowerClient(NumPyClient):
     """
@@ -29,6 +35,7 @@ class FlowerClient(NumPyClient):
     ) -> None:
         self.v_split_id = v_split_id
         self.data = data
+        set_seed(GLOBAL_SEED + v_split_id)  # Ensure reproducibility
         self.model = ClientModel(input_size=self.data.shape[1])
         # Load checkpoint if exists
         ckpt = CHECKPOINT_DIR / f"client_{self.v_split_id}.pth"
@@ -57,11 +64,19 @@ class FlowerClient(NumPyClient):
             - Number of examples used
             - Metrics dict (empty)
         """
+
+        rnd = int(config.get("round", 0))
+        set_seed(GLOBAL_SEED + rnd + self.v_split_id)  # Ensure reproducibility
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        # print(f"\n\n!!!!!   Client {self.v_split_id} on round {rnd}, setting seed to {GLOBAL_SEED + rnd + self.v_split_id}  !!!!!\n\n")
+
+
         embedding = self.model(self.data)
+
         # Save updated client model
         ckpt = CHECKPOINT_DIR / f"client_{self.v_split_id}.pth"
         torch.save(self.model.state_dict(), ckpt)
-        return [embedding.detach().numpy()], len(self.data), {}
+        return [embedding.detach().numpy()], len(self.data), {"v_id": self.v_split_id}
 
     def evaluate(
         self,
@@ -73,11 +88,24 @@ class FlowerClient(NumPyClient):
 
         Returns dummy loss (0.0) and number of examples.
         """
+<<<<<<< deterministic-seed
+
+        rnd = int(config.get("round", 0))
+        set_seed(GLOBAL_SEED + rnd)  # Ensure reproducibility
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+        self.model.zero_grad()
+        embedding = self.model(self.data)
+        grad = torch.from_numpy(parameters[self.v_split_id])
+        embedding.backward(grad)
+        self.optimizer.step()
+=======
         self.model.zero_grad()              # Clear old gradients
         embedding = self.model(self.data)   # Forward pass: features → embeddings
         grad = torch.from_numpy(parameters[self.v_split_id]) # Get gradients from server
         embedding.backward(grad) # Backprop: apply server gradients
         self.optimizer.step() # Update client model weights
+>>>>>>> main
         return 0.0, len(self.data), {}
 
 
@@ -87,8 +115,12 @@ def client_fn(context: Context) -> NumPyClient:
     """
     partition_id = int(context.node_config["partition-id"])
     num_partitions = int(context.node_config["num-partitions"])
+
     # Load and preprocess data
     df_partition, v_split_id = load_data(partition_id, num_partitions)
+
+    set_seed(GLOBAL_SEED + v_split_id)  # Ensure reproducibility
+
     scaled = StandardScaler().fit_transform(df_partition)
     data = torch.tensor(scaled).float() # Normalize features
     lr = float(context.run_config.get("learning-rate", 0.01)) # Convert to tensor

@@ -9,9 +9,10 @@ import torch.nn as nn
 import torch.optim as optim
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 
+from vertical_fl.utils import set_seed, GLOBAL_SEED
+
 # Directory for saving/loading server checkpoints
 CHECKPOINT_DIR = Path(__file__).parent.parent / "model" / "central"
-
 class ServerModel(nn.Module):
     """
     A simple server-side model that aggregates client embeddings.
@@ -34,11 +35,14 @@ class Strategy(fl.server.strategy.FedAvg):
     def __init__(
         self,
         labels: List[float],
-        lr: float = 0.01,
+        lr: float = 0.08,
         **kwargs,
     ) -> None:
         # Ensure checkpoint directory exists
         CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Set global seed for reproducibility
+        set_seed(GLOBAL_SEED)
 
         # Initialize server model
         self.model = ServerModel(12)
@@ -58,9 +62,17 @@ class Strategy(fl.server.strategy.FedAvg):
             initial_parameters=initial_parameters,
             fraction_fit=1.0,           # Require 100% of clients
             fraction_evaluate=1.0,
+<<<<<<< deterministic-seed
+            min_fit_clients=3,
+            min_available_clients=3,
+            min_evaluate_clients=3,
+            on_fit_config_fn=lambda rnd: {"round": rnd},
+            on_evaluate_config_fn=lambda rnd: {"round": rnd},
+=======
             min_fit_clients=3,          # Must have exactly 3 clients
             min_available_clients=3,    # Must have 3 available
             min_evaluate_clients=3,     # Must have 3 for evaluation
+>>>>>>> main
             **kwargs,
         )
 
@@ -80,10 +92,23 @@ class Strategy(fl.server.strategy.FedAvg):
         if not self.accept_failures and failures:
             return None, {}
 
+        results_sorted = sorted(
+            results,
+            key=lambda t: t[1].metrics["v_id"]         # numeric 0,1,2  – stable!
+        )
+
+        # Ensure reproducability
+        set_seed(GLOBAL_SEED + rnd)
+        torch.use_deterministic_algorithms(True, warn_only=True)
+
+        client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results_sorted]
+        embedding_shapes = [emb.shape for emb in client_embeddings]
+        embedding_sums = [emb.sum(axis=0) for emb in client_embeddings]
+
+
         # Collect and concatenate client embeddings
         embedding_list = [
-            torch.from_numpy(parameters_to_ndarrays(res.parameters)[0])
-            for _, res in results
+            torch.from_numpy(emb) for emb in client_embeddings
         ]
         embeddings = torch.cat(embedding_list, dim=1)
         embeddings = embeddings.detach().requires_grad_()
@@ -98,9 +123,14 @@ class Strategy(fl.server.strategy.FedAvg):
         self.optimizer.zero_grad()
 
         # Split gradients back to clients
-        grads = embeddings.grad.split([4, 4, 4], dim=1)
+        split_sizes = [emb.shape[1] for emb in client_embeddings]
+        grads = embeddings.grad.split(split_sizes, dim=1)
+
         np_grads = [g.numpy() for g in grads]
         aggregated_parameters = ndarrays_to_parameters(np_grads)
+
+        gradient_shapes = [g.shape for g in np_grads]
+        gradient_sums = [g.sum(axis=0) for g in np_grads]
 
         # Compute accuracy metric
         with torch.no_grad():
@@ -111,7 +141,9 @@ class Strategy(fl.server.strategy.FedAvg):
         # Save new checkpoint
         self._save_checkpoint()
 
-        return aggregated_parameters, {"accuracy": accuracy}
+        return aggregated_parameters, {"accuracy": accuracy, "embedding_shapes": embedding_shapes,
+                                       "embedding_sums": embedding_sums, "gradient_shapes": gradient_shapes,
+                                       "gradient_sums": gradient_sums}
 
     def aggregate_evaluate(
         self,

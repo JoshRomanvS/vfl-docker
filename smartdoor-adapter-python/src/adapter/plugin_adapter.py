@@ -6,7 +6,7 @@ from generic.adapter_core import AdapterCore
 from generic.broker_connection import BrokerConnection
 from vfl.handler import Handler
 
-ADAPTER_NAME = 'vfl'
+ADAPTER_NAME = "vertical_fl"
 
 def start_plugin_adapter(adapter_name: str, url: str, token: str, loglevel: int):
     """
