@@ -1,12 +1,3 @@
-import torch
-torch.set_num_threads(1)
-try: torch.set_num_interop_threads(1)
-except RuntimeError: pass
-
-from vertical_fl.utils import set_seed, GLOBAL_SEED
-
-set_seed(GLOBAL_SEED)
-
 from flwr.common import Context
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 

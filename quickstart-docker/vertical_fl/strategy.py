@@ -9,8 +9,6 @@ import torch.nn as nn
 import torch.optim as optim
 from flwr.common import ndarrays_to_parameters, parameters_to_ndarrays
 
-from vertical_fl.utils import set_seed, GLOBAL_SEED
-
 # Directory for saving/loading server checkpoints
 CHECKPOINT_DIR = Path(__file__).parent.parent / "model" / "central"
 class ServerModel(nn.Module):
@@ -40,9 +38,6 @@ class Strategy(fl.server.strategy.FedAvg):
     ) -> None:
         # Ensure checkpoint directory exists
         CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Set global seed for reproducibility
-        set_seed(GLOBAL_SEED)
 
         # Initialize server model
         self.model = ServerModel(12)
@@ -90,10 +85,6 @@ class Strategy(fl.server.strategy.FedAvg):
             results,
             key=lambda t: t[1].metrics["v_id"]         # numeric 0,1,2  – stable!
         )
-
-        # Ensure reproducability
-        set_seed(GLOBAL_SEED + rnd)
-        torch.use_deterministic_algorithms(True, warn_only=True)
 
         client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results_sorted]
         embedding_shapes = [emb.shape for emb in client_embeddings]
