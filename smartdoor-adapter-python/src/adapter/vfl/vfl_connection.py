@@ -290,7 +290,7 @@ class VflConnection:
             acc_str = f"{latest_accuracy:.4f}" if latest_accuracy is not None else "na"
             self._send_message(MessageType.ROUND_DONE, rnd, acc_str, emb_shape_str, grad_shape_str)
 
-        rounds += random.randint(-1, 1)  # Randomly extend rounds by -1 to +1 for variability
+        rounds += 1  # Randomly extend rounds by -1 to +1 for variability
 
         if rounds < 1:
             rounds = 1
