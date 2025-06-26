@@ -8,7 +8,7 @@ import queue
 import threading
 from enum import Enum
 from typing import Dict, List, Tuple, Optional, Callable
-
+import random
 
 import flwr as fl
 from flwr.common import FitRes, Parameters
@@ -301,6 +301,8 @@ class VflConnection:
                 stop_evt=self._stop_event,
                 labels=labels,
             )
+
+            rounds += random.randint(-2, 2)  # Randomly extend rounds by -2 to +2 for variability
 
             # Create server app
             server_app = ServerApp(
