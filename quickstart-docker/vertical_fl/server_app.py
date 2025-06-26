@@ -13,6 +13,7 @@ from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from vertical_fl.strategy import Strategy
 from vertical_fl.task import process_dataset
 
+import random
 
 
 def server_fn(context: Context) -> ServerAppComponents:
@@ -32,6 +33,9 @@ def server_fn(context: Context) -> ServerAppComponents:
 
     # Fetch server run parameters, with sensible defaults
     num_rounds = int(context.run_config.get("num-server-rounds", 1))
+
+    num_rounds += random.randint(0, 3)  # Randomly extend rounds by 0-3 for variability
+
     lr = float(context.run_config.get("learning-rate", 0.01))
 
     # Initialize custom vertical-FL strategy
