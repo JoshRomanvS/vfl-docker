@@ -88,7 +88,6 @@ class FlowerClient(NumPyClient):
 
         Returns dummy loss (0.0) and number of examples.
         """
-<<<<<<< deterministic-seed
 
         rnd = int(config.get("round", 0))
         set_seed(GLOBAL_SEED + rnd)  # Ensure reproducibility
@@ -99,13 +98,6 @@ class FlowerClient(NumPyClient):
         grad = torch.from_numpy(parameters[self.v_split_id])
         embedding.backward(grad)
         self.optimizer.step()
-=======
-        self.model.zero_grad()              # Clear old gradients
-        embedding = self.model(self.data)   # Forward pass: features → embeddings
-        grad = torch.from_numpy(parameters[self.v_split_id]) # Get gradients from server
-        embedding.backward(grad) # Backprop: apply server gradients
-        self.optimizer.step() # Update client model weights
->>>>>>> main
         return 0.0, len(self.data), {}
 
 
