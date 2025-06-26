@@ -290,6 +290,11 @@ class VflConnection:
             acc_str = f"{latest_accuracy:.4f}" if latest_accuracy is not None else "na"
             self._send_message(MessageType.ROUND_DONE, rnd, acc_str, emb_shape_str, grad_shape_str)
 
+        rounds += random.randint(-2, 2)  # Randomly extend rounds by -1 to +1 for variability
+
+        if rounds < 1:
+            rounds = 1
+
         try:
             # Prepare data
             labels, _ = process_dataset()
@@ -301,8 +306,6 @@ class VflConnection:
                 stop_evt=self._stop_event,
                 labels=labels,
             )
-
-            rounds += random.randint(-2, 2)  # Randomly extend rounds by -2 to +2 for variability
 
             # Create server app
             server_app = ServerApp(
