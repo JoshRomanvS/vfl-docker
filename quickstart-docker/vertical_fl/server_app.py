@@ -34,7 +34,7 @@ def server_fn(context: Context) -> ServerAppComponents:
     # Fetch server run parameters, with sensible defaults
     num_rounds = int(context.run_config.get("num-server-rounds", 1))
 
-    num_rounds += random.randint(0, 3)  # Randomly extend rounds by 0-3 for variability
+    num_rounds += random.randint(-2, 2)  # Randomly extend rounds by -2 to +2 for variability
 
     lr = float(context.run_config.get("learning-rate", 0.01))
 
