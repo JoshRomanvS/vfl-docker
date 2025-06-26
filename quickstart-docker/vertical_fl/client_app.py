@@ -11,6 +11,7 @@ from sklearn.preprocessing import StandardScaler
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import random
 
 from flwr.client import NumPyClient, ClientApp
 from flwr.common import Context
@@ -65,11 +66,22 @@ class FlowerClient(NumPyClient):
             - Metrics dict (empty)
         """
 
+
         rnd = int(config.get("round", 0))
         set_seed(GLOBAL_SEED + rnd + self.v_split_id)  # Ensure reproducibility
         torch.use_deterministic_algorithms(True, warn_only=True)
         # print(f"\n\n!!!!!   Client {self.v_split_id} on round {rnd}, setting seed to {GLOBAL_SEED + rnd + self.v_split_id}  !!!!!\n\n")
 
+        # Simulate random client crash on round 19 for v_split_id 1
+        if self.v_split_id == 1 and rnd == 19:
+            print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
+            raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
+
+
+        # Simulate random client crash 1% of the time
+        if random.random() < 0.01:
+            print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
+            raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
 
         embedding = self.model(self.data)
 

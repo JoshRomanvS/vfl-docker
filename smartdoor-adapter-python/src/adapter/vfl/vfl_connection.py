@@ -328,7 +328,7 @@ class VflConnection:
         except Exception as e:
             logger.exception("Error during simulation")
             self._send_error(f"SimulationError:{str(e)}")
-        finally:
+        else:
             # Send completion message
             if latest_accuracy is not None:
                 self._send_message(MessageType.TRAINING_DONE, f"{latest_accuracy:.4f}")
