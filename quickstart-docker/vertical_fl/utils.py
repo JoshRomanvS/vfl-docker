@@ -22,6 +22,9 @@ def set_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+    torch.use_deterministic_algorithms(True, warn_only=True)
+
+
     # Force single-threaded behavior in PyTorch and BLAS
-    torch.set_num_threads(1)
+    # torch.set_num_threads(1)
     # torch.set_num_interop_threads(1)

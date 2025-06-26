@@ -209,7 +209,7 @@ class VflConnection:
                 return
 
             if cmd in (Command.RESET.value, Command.RESET_VFL.value):
-                print(F"command received: {cmd}")
+                # print(F"command received: {cmd}")
                 self._graceful_stop_simulation()
                 self.clear_all_checkpoints()
                 if cmd in Command.RESET.value:

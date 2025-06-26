@@ -35,6 +35,7 @@ class FlowerClient(NumPyClient):
     ) -> None:
         self.v_split_id = v_split_id
         self.data = data
+        set_seed(GLOBAL_SEED + v_split_id)  # Ensure reproducibility
         self.model = ClientModel(input_size=self.data.shape[1])
         # Load checkpoint if exists
         ckpt = CHECKPOINT_DIR / f"client_{self.v_split_id}.pth"
@@ -66,7 +67,8 @@ class FlowerClient(NumPyClient):
 
         rnd = int(config.get("round", 0))
         set_seed(GLOBAL_SEED + rnd + self.v_split_id)  # Ensure reproducibility
-        print(f"\n\n!!!!!   Client {self.v_split_id} on round {rnd}, setting seed to {GLOBAL_SEED + rnd + self.v_split_id}  !!!!!\n\n")
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        # print(f"\n\n!!!!!   Client {self.v_split_id} on round {rnd}, setting seed to {GLOBAL_SEED + rnd + self.v_split_id}  !!!!!\n\n")
 
 
         embedding = self.model(self.data)
@@ -74,7 +76,7 @@ class FlowerClient(NumPyClient):
         # Save updated client model
         ckpt = CHECKPOINT_DIR / f"client_{self.v_split_id}.pth"
         torch.save(self.model.state_dict(), ckpt)
-        return [embedding.detach().numpy()], len(self.data), {}
+        return [embedding.detach().numpy()], len(self.data), {"v_id": self.v_split_id}
 
     def evaluate(
         self,
@@ -88,7 +90,8 @@ class FlowerClient(NumPyClient):
         """
 
         rnd = int(config.get("round", 0))
-        set_seed(GLOBAL_SEED + rnd + self.v_split_id)  # Ensure reproducibility
+        set_seed(GLOBAL_SEED + rnd)  # Ensure reproducibility
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
         self.model.zero_grad()
         embedding = self.model(self.data)
@@ -105,10 +108,11 @@ def client_fn(context: Context) -> NumPyClient:
     partition_id = int(context.node_config["partition-id"])
     num_partitions = int(context.node_config["num-partitions"])
 
-    set_seed(GLOBAL_SEED + partition_id)  # Ensure reproducibility
-
     # Load and preprocess data
     df_partition, v_split_id = load_data(partition_id, num_partitions)
+
+    set_seed(GLOBAL_SEED + v_split_id)  # Ensure reproducibility
+
     scaled = StandardScaler().fit_transform(df_partition)
     data = torch.tensor(scaled).float()
     lr = float(context.run_config.get("learning-rate", 0.01))

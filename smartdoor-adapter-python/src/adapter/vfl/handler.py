@@ -134,7 +134,7 @@ class Handler(AbstractHandler):
 
 
     def _message2label(self, msg: str) -> Label:
-        print(F"\n\nParsing message: {msg}\n\n")
+        # print(F"\n\nParsing message: {msg}\n\n")
         parts = msg.split(":")
         name  = parts[0].lower()
         params = []

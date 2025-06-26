@@ -35,7 +35,7 @@ class Strategy(fl.server.strategy.FedAvg):
     def __init__(
         self,
         labels: List[float],
-        lr: float = 0.01,
+        lr: float = 0.08,
         **kwargs,
     ) -> None:
         # Ensure checkpoint directory exists
@@ -86,15 +86,19 @@ class Strategy(fl.server.strategy.FedAvg):
         if not self.accept_failures and failures:
             return None, {}
 
+        results_sorted = sorted(
+            results,
+            key=lambda t: t[1].metrics["v_id"]         # numeric 0,1,2  – stable!
+        )
+
         # Ensure reproducability
         set_seed(GLOBAL_SEED + rnd)
-        print(f"\n\n!!!!!   In aggregate_fit: Round {rnd}, used seed: {GLOBAL_SEED + rnd}  !!!!!\n\n")
+        torch.use_deterministic_algorithms(True, warn_only=True)
 
-        client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results]
+        client_embeddings = [parameters_to_ndarrays(res.parameters)[0] for _, res in results_sorted]
         embedding_shapes = [emb.shape for emb in client_embeddings]
         embedding_sums = [emb.sum(axis=0) for emb in client_embeddings]
 
-        # print(f"Aggregating {len(client_embeddings)} client embeddings with shapes: {embedding_shapes} and sum: {embedding_sums}")
 
         # Collect and concatenate client embeddings
         embedding_list = [
@@ -113,7 +117,9 @@ class Strategy(fl.server.strategy.FedAvg):
         self.optimizer.zero_grad()
 
         # Split gradients back to clients
-        grads = embeddings.grad.split([4, 4, 4], dim=1)
+        split_sizes = [emb.shape[1] for emb in client_embeddings]
+        grads = embeddings.grad.split(split_sizes, dim=1)
+
         np_grads = [g.numpy() for g in grads]
         aggregated_parameters = ndarrays_to_parameters(np_grads)
 
@@ -129,7 +135,9 @@ class Strategy(fl.server.strategy.FedAvg):
         # Save new checkpoint
         self._save_checkpoint()
 
-        return aggregated_parameters, {"accuracy": accuracy, "embedding_shapes": embedding_shapes, "embedding_sums": embedding_sums, "gradient_shapes": gradient_shapes, "gradient_sums": gradient_sums}
+        return aggregated_parameters, {"accuracy": accuracy, "embedding_shapes": embedding_shapes,
+                                       "embedding_sums": embedding_sums, "gradient_shapes": gradient_shapes,
+                                       "gradient_sums": gradient_sums}
 
     def aggregate_evaluate(
         self,
