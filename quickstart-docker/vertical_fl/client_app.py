@@ -67,21 +67,27 @@ class FlowerClient(NumPyClient):
         """
 
 
+
         rnd = int(config.get("round", 0))
+
+        import time
+        crash_rng = random.Random()
+        crash_rng.seed(time.time() + os.getpid() + self.v_split_id + rnd)
+        if crash_rng.random() < 0.01:
+            print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
+            raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
+
         set_seed(GLOBAL_SEED + rnd + self.v_split_id)  # Ensure reproducibility
         torch.use_deterministic_algorithms(True, warn_only=True)
         # print(f"\n\n!!!!!   Client {self.v_split_id} on round {rnd}, setting seed to {GLOBAL_SEED + rnd + self.v_split_id}  !!!!!\n\n")
 
         # Simulate random client crash on round 19 for v_split_id 1
-        if self.v_split_id == 1 and rnd == 19:
-            print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
-            raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
+        # if self.v_split_id == 1 and rnd == 19:
+        #     print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
+        #     raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
 
 
-        # Simulate random client crash 1% of the time
-        if random.random() < 0.01:
-            print(f"🔴 Client {self.v_split_id} randomly crashed on round {rnd}", flush=True)
-            raise RuntimeError(f"Client {self.v_split_id} disconnected unexpectedly")
+        # Simulate random client crash 5% of the time
 
         embedding = self.model(self.data)
 
