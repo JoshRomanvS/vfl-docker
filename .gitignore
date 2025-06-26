@@ -6,8 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
-*checkpoint*
-*client*
+# Ignore all checkpoint and client state files
+checkpoint_*.pth
+client_*.pth
 
 # Distribution / packaging
 .Python
