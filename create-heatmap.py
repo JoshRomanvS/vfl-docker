@@ -15,7 +15,7 @@ transitions = [
 test_cases = [
     "Reference",
     "Non-deterministic",
-    "Rounds incorrect",
+    "Off-by-one",
     "Client disconnect"
 ]
 
@@ -23,7 +23,7 @@ test_cases = [
 raw_data = {
     "Reference":            [1.0, 1.0, 1.0, 0.66],
     "Non-deterministic":    [1.0, 1.0, 1.0, 0.33],
-    "Rounds incorrect":     [0.0, 1.0, 1.0, 0.0],
+    "Off-by-one":           [0.0, 1.0, 1.0, 0.0],
     "Client disconnect":    [1.0, 1.0, 1.0, 1.0]
 }
 
