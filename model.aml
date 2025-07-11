@@ -1,0 +1,88 @@
+# ────────────────────────────────────────────────────────────
+#  Vertical-FL adapter
+# ────────────────────────────────────────────────────────────
+
+timeout 20.0
+
+external 'vfl'
+
+function('all_shapes_are_x4', [[:string]] => :boolean) { |shapes|
+  shapes.all? { |s| s.end_with?("x4") }
+}
+
+process('main') {
+
+  # ── Channel signature ────────────────────────────────────
+  channel('vfl') {
+    stimulus 'start',  { 'rounds' => :integer }
+    stimulus 'reset_vfl'
+
+    response 'training_started'
+    response 'round_done',     { 'round' => :integer, 'accuracy' => :decimal,
+                                 'embedding_shapes' => [:string], 'gradient_shapes' => [:string] }
+    response 'training_done',  { 'accuracy' => :decimal }
+    response 'reset_performed'
+    response 'error',          { 'reason' => :string }
+  }
+
+  # ── Local bookkeeping ─────────────────────────────────────
+  var 'baseline_accs', [:decimal], []
+  var 'current_accs', [:decimal], []
+  var 'rounds_target', :integer, 0
+  var 'checkpoint_active', :boolean, false
+
+  # ── States ────────────────────────────────────────────────
+
+  state 'idle'
+  choice {
+    o {
+      # Start a new training session with any positive round count.
+      receive 'start', constraint: 'rounds >= 50 && rounds <= 50 && checkpoint_active == false', update: 'rounds_target = rounds'
+      send 'training_started'
+      goto 'training'
+    }
+    o {
+      receive 'reset_vfl', constraint: 'checkpoint_active == true', update: 'current_accs = []'
+      send 'reset_performed', update: 'checkpoint_active = false'
+      goto 'idle'
+    }
+  }
+
+  # stay in Training until we hit a terminating branch
+  state 'training'
+  repeat {
+      o {
+        # Normal progress: one round finished
+        send 'round_done',
+          constraint: 'round == round && (length(current_accs) == 0 || accuracy >= last(current_accs) - 0.3)',
+            update: 'current_accs += [accuracy]'
+      }
+      o {
+        # Last round: after round, training is finished
+        send 'round_done',
+          constraint: 'round == rounds_target
+                        && all_shapes_are_x4(gradient_shapes)
+                        && (length(current_accs) == 0 || accuracy >= last(current_accs) - 0.3)',
+            update: 'current_accs += [accuracy]'
+        choice {
+          o {
+            send 'training_done',
+#             If the list of current accuracies is bigger than the baseline_accs, the baseline_accs should be a subset of the current_accs
+              constraint: 'length(current_accs) > length(baseline_accs) && baseline_accs <~ current_accs',
+                update: 'baseline_accs = current_accs; rounds_target = 0; checkpoint_active = true'
+          }
+          o {
+            send 'training_done',
+              constraint: 'length(current_accs) <= length(baseline_accs) && current_accs <~ baseline_accs',
+                update: 'checkpoint_active = true'
+          }
+        }
+        goto 'idle'
+      }
+      o {
+        # If the SUT emits an error we accept it and go back to Idle
+        send 'error'
+        goto 'idle'
+      }
+  }
+}
